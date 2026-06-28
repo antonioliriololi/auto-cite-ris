@@ -730,8 +730,9 @@ function renderTable() {
   setStatus(`✓ Listo. ${found} DOI encontrados, ${missing} sin DOI. Consultando CrossRef...`);
 }
 
-// ── CrossRef via DOI Content Negotiation ──────────────────────────────────────
-// doi.org soporta CORS y devuelve citas pre-formateadas por CrossRef
+// ── CrossRef API — estrategia robusta ─────────────────────────────────────────
+// api.crossref.org tiene CORS real habilitado para todos los dominios web.
+// doi.org redirige a publishers que NO tienen CORS → falla en GitHub Pages.
 const crossrefCache = {};
 let pendingFetches = 0;
 
@@ -745,47 +746,55 @@ async function fetchCrossRef(doi, cellId, rowIdx) {
     return;
   }
 
-  const base = `https://doi.org/${encodeURIComponent(doi)}`;
+  // Intentar 3 endpoints en orden — todos con CORS real
+  const endpoints = [
+    // 1. CrossRef REST API (JSON estructurado) — el más confiable
+    () => fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, {
+            headers: { 'Accept': 'application/json' }
+          }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+          .then(j => ({ type: 'crossref', data: j.message })),
 
-  try {
-    // Paso 1: obtener metadatos estructurados (CSL JSON) — soporta CORS
-    const [cslResp, apaResp, bibResp] = await Promise.all([
-      fetch(base, { headers: { 'Accept': 'application/vnd.citationstyles.csl+json' } }),
-      fetch(base, { headers: { 'Accept': 'text/x-bibliography; style=apa' } }),
-      fetch(base, { headers: { 'Accept': 'application/x-bibtex' } }),
-    ]);
+    // 2. CrossRef content negotiation (CSL JSON directo)
+    () => fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}/transform/application/vnd.citationstyles.csl+json`, {
+            headers: { 'Accept': 'application/json' }
+          }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+          .then(j => ({ type: 'csl', data: j })),
+  ];
 
-    if (!cslResp.ok) throw new Error(`doi.org ${cslResp.status}`);
-
-    const csl     = await cslResp.json();
-    const apaText = apaResp.ok  ? (await apaResp.text()).trim()  : null;
-    const bibText = bibResp.ok  ? (await bibResp.text()).trim()  : null;
-
-    const cached = { csl, apaText, bibText, doi };
-    crossrefCache[doi] = cached;
-    results[rowIdx].crossref = cached;
-    renderApaCell(cell, cached, doi, rowIdx);
-
-  } catch(e) {
-    // Fallback: CrossRef REST API directa
-    try {
-      const resp2 = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`);
-      if (!resp2.ok) throw new Error(`crossref ${resp2.status}`);
-      const json = await resp2.json();
-      const csl  = crossrefMsgToCSL(json.message, doi);
-      const cached = { csl, apaText: null, bibText: null, doi };
-      crossrefCache[doi] = cached;
-      results[rowIdx].crossref = cached;
-      renderApaCell(cell, cached, doi, rowIdx);
-    } catch(e2) {
-      results[rowIdx].fetchError = true;
-      cell.innerHTML = `
-        <span class="apa-error">⚠ Sin conexión o DOI no registrado en CrossRef</span>
-        <br><button class="btn-ris btn-ris-na" disabled>⬇ RIS</button>
-        <button class="btn-ris btn-ris-na" disabled style="margin-left:4px">⬇ BibTeX</button>
-      `;
-    }
+  let result = null;
+  for (const attempt of endpoints) {
+    try { result = await attempt(); break; } catch(e) { /* try next */ }
   }
+
+  if (!result) {
+    results[rowIdx].fetchError = true;
+    cell.innerHTML = `
+      <span class="apa-error">⚠ CrossRef no encontró este DOI<br><small style="opacity:.7">(puede ser artículo muy reciente o DOI con error)</small></span>
+      <br><div style="display:flex;gap:6px;margin-top:6px">
+        <button class="btn-ris btn-ris-na" disabled>⬇ RIS</button>
+        <button class="btn-ris btn-ris-na" disabled style="background:#1a4a7a;border-color:#1a4a7a">⬇ BibTeX</button>
+      </div>
+    `;
+    checkAllDone();
+    return;
+  }
+
+  // Normalizar a CSL independientemente del endpoint usado
+  let csl;
+  if (result.type === 'crossref') {
+    csl = crossrefMsgToCSL(result.data, doi);
+  } else {
+    csl = result.data;
+    if (!csl.DOI) csl.DOI = doi;
+  }
+
+  // Para BibTeX: construir desde los datos (no depender de doi.org redirect)
+  const bibText = buildBibTeXFromCSL(csl, doi);
+
+  const cached = { csl, apaText: null, bibText, doi };
+  crossrefCache[doi] = cached;
+  results[rowIdx].crossref = cached;
+  renderApaCell(cell, cached, doi, rowIdx);
   checkAllDone();
 }
 
@@ -803,7 +812,30 @@ function crossrefMsgToCSL(msg, doi) {
   };
 }
 
-function checkAllDone() {
+// Construir BibTeX desde CSL
+function buildBibTeXFromCSL(csl, doi) {
+  const authorList = (csl.author||[]).map(a =>
+    (a.family && a.given) ? `${a.family}, ${a.given}` : (a.family||a.name||'')
+  ).filter(Boolean);
+  const year   = csl.issued?.['date-parts']?.[0]?.[0] || '????';
+  const title  = (typeof csl.title === 'string' ? csl.title : (csl.title?.[0]||'')).replace(/<[^>]+>/g,'');
+  const journal= (csl['container-title']||'').replace(/<[^>]+>/g,'');
+  const key    = `${(authorList[0]||'Author').split(',')[0].trim().replace(/\s/g,'')}${year}`;
+  const lines  = [
+    `@article{${key},`,
+    `  author  = {${authorList.join(' and ')}},`,
+    `  year    = {${year}},`,
+    `  title   = {${title}},`,
+    `  journal = {${journal}},`,
+    csl.volume ? `  volume  = {${csl.volume}},` : '',
+    csl.issue  ? `  number  = {${csl.issue}},`  : '',
+    csl.page   ? `  pages   = {${csl.page}},`   : '',
+    `  doi     = {${doi}},`,
+    `  url     = {https://doi.org/${doi}}`,
+    `}`,
+  ].filter(l=>l!=='');
+  return lines.join('\n');
+}
   pendingFetches--;
   if (pendingFetches <= 0) {
     const ok  = results.filter(r => r.meta).length;
