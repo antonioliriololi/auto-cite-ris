@@ -20,9 +20,11 @@
   .subtitle { font-size: 13px; color: var(--accent2); margin-top: 4px; }
 
   #dropzone {
+    display: block;
     border: 2px dashed var(--border); border-radius: 6px; padding: 40px 24px;
     text-align: center; cursor: pointer; transition: border-color .2s, background .2s;
     background: var(--surface); margin-bottom: 20px;
+    user-select: none;
   }
   #dropzone.drag-over { border-color: var(--accent); background: #ececec; }
   #dropzone .icon { font-size: 36px; margin-bottom: 10px; }
@@ -135,12 +137,14 @@
   <div class="subtitle">Extrae DOI · Consulta CrossRef · Genera cita APA 7 · Descarga .RIS por artículo</div>
 </header>
 
-<div id="dropzone" onclick="document.getElementById('fileInput').click()">
-  <div class="icon">📄</div>
-  <p><strong>Clic aquí</strong> o arrastra y suelta tus archivos PDF</p>
-  <p>Hasta 50 PDFs a la vez</p>
-</div>
-<input type="file" id="fileInput" multiple accept=".pdf">
+<label id="dropzone" for="fileInput">
+  <div id="dropzoneInner">
+    <div class="icon">📄</div>
+    <p><strong>Clic aquí</strong> o arrastra y suelta tus archivos PDF</p>
+    <p>Hasta 50 PDFs a la vez</p>
+  </div>
+</label>
+<input type="file" id="fileInput" multiple accept=".pdf" style="display:none">
 
 <div class="controls">
   <button id="btnProcess" disabled onclick="processPDFs()">⚙ Procesar PDFs</button>
@@ -195,10 +199,16 @@ let loadedFiles = [], results = [], debugLog = [];
 
 // ── Drag & drop ───────────────────────────────────────────────────────────────
 const dz = document.getElementById('dropzone');
-dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
-dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
-dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); handleFiles(e.dataTransfer.files); });
+// El click lo maneja el <label for="fileInput"> de forma nativa
+dz.addEventListener('dragover',  e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', ()  => dz.classList.remove('drag-over'));
+dz.addEventListener('dragend',   ()  => dz.classList.remove('drag-over'));
+dz.addEventListener('drop',      e  => { e.preventDefault(); dz.classList.remove('drag-over'); handleFiles(e.dataTransfer.files); });
 document.getElementById('fileInput').addEventListener('change', e => handleFiles(e.target.files));
+
+function setDropzoneContent(html) {
+  document.getElementById('dropzoneInner').innerHTML = html;
+}
 
 function handleFiles(files) {
   const pdfs = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
@@ -206,7 +216,7 @@ function handleFiles(files) {
   loadedFiles = pdfs;
   setStatus(`${pdfs.length} archivo(s) cargado(s). Haz clic en "Procesar PDFs".`);
   document.getElementById('btnProcess').disabled = false;
-  dz.innerHTML = `<div class="icon">✅</div><p><strong>${pdfs.length} PDF(s)</strong> listos para procesar</p>`;
+  setDropzoneContent(`<div class="icon">✅</div><p><strong>${pdfs.length} PDF(s)</strong> listos para procesar</p>`);
 }
 
 // ── Main ──────────────────────────────────────────────────────────────────────
@@ -836,6 +846,8 @@ function buildBibTeXFromCSL(csl, doi) {
   ].filter(l=>l!=='');
   return lines.join('\n');
 }
+
+function checkAllDone() {
   pendingFetches--;
   if (pendingFetches <= 0) {
     const ok  = results.filter(r => r.meta).length;
@@ -1119,7 +1131,7 @@ function clearAll() {
   document.getElementById('summary').style.display = 'none';
   document.getElementById('debugPanel').textContent = '';
   document.getElementById('btnProcess').disabled = true;
-  dz.innerHTML = '<div class="icon">📄</div><p><strong>Clic aquí</strong> o arrastra y suelta tus archivos PDF</p><p>Hasta 50 PDFs a la vez</p>';
+  setDropzoneContent('<div class="icon">📄</div><p><strong>Clic aquí</strong> o arrastra y suelta tus archivos PDF</p><p>Hasta 50 PDFs a la vez</p>');
   setStatus('');
 }
 function setStatus(msg) { document.getElementById('statusMsg').textContent = msg; }
