@@ -1,0 +1,1033 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AntoMatic Cite & RIS</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f7f7f7; --border: #e0e0e0;
+    --accent: #111111; --accent2: #666666; --tag: #f0f0f0;
+    --success: #1a7a3f; --warn: #b85c00; --error: #cc2222;
+    --font: 'Arial', sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--font); background: var(--bg); color: var(--accent); min-height: 100vh; padding: 32px 20px 60px; }
+  header { border-bottom: 2px solid var(--accent); padding-bottom: 14px; margin-bottom: 28px; }
+  .brand { font-size: 11px; font-weight: 700; letter-spacing: 3px; text-transform: uppercase; color: var(--accent2); margin-bottom: 4px; }
+  h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.3px; }
+  .subtitle { font-size: 13px; color: var(--accent2); margin-top: 4px; }
+
+  #dropzone {
+    border: 2px dashed var(--border); border-radius: 6px; padding: 40px 24px;
+    text-align: center; cursor: pointer; transition: border-color .2s, background .2s;
+    background: var(--surface); margin-bottom: 20px;
+  }
+  #dropzone.drag-over { border-color: var(--accent); background: #ececec; }
+  #dropzone .icon { font-size: 36px; margin-bottom: 10px; }
+  #dropzone p { font-size: 14px; color: var(--accent2); line-height: 1.6; }
+  #dropzone strong { color: var(--accent); }
+  #fileInput { display: none; }
+
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; align-items: center; }
+  button {
+    font-family: var(--font); font-size: 13px; font-weight: 700; letter-spacing: 0.5px;
+    padding: 9px 18px; border: 2px solid var(--accent); background: var(--accent);
+    color: #fff; border-radius: 4px; cursor: pointer; transition: background .15s;
+  }
+  button:hover { background: #333; }
+  button.secondary { background: #fff; color: var(--accent); }
+  button.secondary:hover { background: var(--surface); }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+  #progressBar { display: none; height: 4px; background: var(--border); border-radius: 2px; margin-bottom: 12px; overflow: hidden; }
+  #progressFill { height: 100%; background: var(--accent); transition: width .3s; width: 0%; }
+  #statusMsg { font-size: 13px; color: var(--accent2); margin-bottom: 14px; min-height: 18px; }
+
+  #summary {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 4px;
+    padding: 12px 16px; margin-bottom: 20px; font-size: 13px; display: none; gap: 24px; flex-wrap: wrap;
+  }
+  .badge { display: flex; align-items: center; gap: 6px; }
+  .badge .num { font-size: 20px; font-weight: 700; }
+  .badge .lbl { font-size: 11px; text-transform: uppercase; letter-spacing: 1px; color: var(--accent2); }
+  .badge.ok .num { color: var(--success); }
+  .badge.warn .num { color: var(--warn); }
+
+  #tableWrap { display: none; overflow-x: auto; border: 1px solid var(--border); border-radius: 4px; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  thead th {
+    background: var(--accent); color: #fff; padding: 10px 14px; text-align: left;
+    font-size: 11px; letter-spacing: 1px; text-transform: uppercase; white-space: nowrap;
+  }
+  tbody tr { border-bottom: 1px solid var(--border); }
+  tbody tr:last-child { border-bottom: none; }
+  tbody tr:hover { background: var(--surface); }
+  td { padding: 10px 14px; vertical-align: top; line-height: 1.5; }
+  td.num-cell { color: var(--accent2); font-weight: 700; width: 36px; text-align: center; white-space: nowrap; }
+  td.doi-cell { font-family: monospace; font-size: 12px; white-space: nowrap; }
+  td.doi-cell .doi-link { color: var(--accent); text-decoration: none; display: block; margin-bottom: 4px; }
+  td.doi-cell .doi-link:hover { text-decoration: underline; }
+
+  /* Copy DOI button */
+  .btn-copy {
+    display: inline-block; font-family: var(--font); font-size: 10px; font-weight: 700;
+    letter-spacing: 0.5px; padding: 3px 8px; border: 1.5px solid var(--accent);
+    background: #fff; color: var(--accent); border-radius: 3px; cursor: pointer;
+    transition: background .15s, color .15s; user-select: none; white-space: nowrap;
+  }
+  .btn-copy:hover { background: var(--accent); color: #fff; }
+  .btn-copy.copied { border-color: var(--success); background: var(--success); color: #fff; }
+
+  .not-found { color: var(--error); font-style: italic; font-size: 12px; }
+  .filename-tag {
+    display: inline-block; background: var(--tag); border-radius: 3px; padding: 2px 7px;
+    font-size: 11px; color: var(--accent2); max-width: 200px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; vertical-align: middle;
+  }
+
+  /* ── APA / RIS column ────────────────────────────────────────────────────── */
+  td.apa-cell { min-width: 260px; max-width: 340px; }
+
+  .apa-box {
+    background: #111; color: #e8e8e8; border-radius: 4px;
+    padding: 10px 12px; font-size: 11px; line-height: 1.6;
+    font-family: 'Arial', sans-serif; margin-bottom: 8px;
+  }
+  .apa-box .apa-field { display: flex; gap: 6px; margin-bottom: 2px; }
+  .apa-box .apa-label {
+    color: #888; font-size: 10px; letter-spacing: 1px; text-transform: uppercase;
+    min-width: 52px; padding-top: 1px; flex-shrink: 0;
+  }
+  .apa-box .apa-value { color: #e8e8e8; }
+  .apa-box .apa-ref {
+    margin-top: 8px; padding-top: 8px; border-top: 1px solid #333;
+    font-style: italic; color: #ccc; font-size: 11px; line-height: 1.5;
+  }
+  .apa-loading { color: var(--accent2); font-size: 12px; font-style: italic; }
+  .apa-error { color: var(--warn); font-size: 11px; font-style: italic; }
+
+  .btn-ris {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-family: var(--font); font-size: 10px; font-weight: 700;
+    letter-spacing: 0.5px; padding: 4px 10px;
+    border: 1.5px solid #1a7a3f; background: #1a7a3f; color: #fff;
+    border-radius: 3px; cursor: pointer; transition: background .15s;
+    user-select: none; white-space: nowrap; text-decoration: none;
+  }
+  .btn-ris:hover { background: #145e30; }
+  .btn-ris-na { opacity: 0.35; cursor: not-allowed; }
+
+  .export-row { margin-top: 18px; display: none; gap: 10px; flex-wrap: wrap; }
+
+  #debugToggle { font-size: 11px; color: var(--accent2); cursor: pointer; text-decoration: underline; margin-left: 10px; }
+  #debugPanel { display: none; background: #f9f9f9; border: 1px solid var(--border); border-radius: 4px; padding: 14px; margin-top: 12px; font-size: 11px; font-family: monospace; white-space: pre-wrap; max-height: 320px; overflow-y: auto; }
+
+  footer { margin-top: 40px; font-size: 11px; color: #bbb; text-align: center; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="brand">AntoMatic Tools · EPG UNASAM</div>
+  <h1>Cite & RIS</h1>
+  <div class="subtitle">Extrae DOI · Consulta CrossRef · Genera cita APA 7 · Descarga .RIS por artículo</div>
+</header>
+
+<div id="dropzone" onclick="document.getElementById('fileInput').click()">
+  <div class="icon">📄</div>
+  <p><strong>Clic aquí</strong> o arrastra y suelta tus archivos PDF</p>
+  <p>Hasta 50 PDFs a la vez</p>
+</div>
+<input type="file" id="fileInput" multiple accept=".pdf">
+
+<div class="controls">
+  <button id="btnProcess" disabled onclick="processPDFs()">⚙ Procesar PDFs</button>
+  <button class="secondary" onclick="clearAll()">✕ Limpiar</button>
+  <span id="debugToggle" onclick="toggleDebug()">Ver diagnóstico</span>
+</div>
+
+<div id="progressBar"><div id="progressFill"></div></div>
+<div id="statusMsg"></div>
+<div id="debugPanel"></div>
+
+<div id="summary" style="display:none;">
+  <div class="badge ok"><span class="num" id="cntFound">0</span><span class="lbl">DOI encontrados</span></div>
+  <div class="badge warn"><span class="num" id="cntMissing">0</span><span class="lbl">Sin DOI</span></div>
+  <div class="badge"><span class="num" id="cntTotal">0</span><span class="lbl">Total PDFs</span></div>
+</div>
+
+<div id="tableWrap">
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Título del Artículo</th>
+        <th>Autores</th>
+        <th>DOI</th>
+        <th>Cita APA 7 · RIS</th>
+        <th>Archivo</th>
+      </tr>
+    </thead>
+    <tbody id="tableBody"></tbody>
+  </table>
+</div>
+
+<div class="export-row" id="exportRow">
+  <button onclick="exportCSV()">⬇ Exportar CSV</button>
+  <button class="secondary" onclick="exportTXT()">⬇ Exportar TXT</button>
+  <button class="secondary" onclick="exportDOIs()">⬇ Solo DOIs</button>
+  <button onclick="exportAllRIS()" style="background:#1a7a3f;border-color:#1a7a3f;">⬇ Exportar TODO .RIS</button>
+</div>
+
+<footer>AntoMatic Cite &amp; RIS · Dr. Félix Antonio Lirio Loli · EPG UNASAM · Datos vía CrossRef API · Uso académico</footer>
+
+<script>
+// ── PDF.js worker setup (avoid "fake worker" warning) ─────────────────────────
+(function() {
+  const workerUrl = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl;
+})();
+
+let loadedFiles = [], results = [], debugLog = [];
+
+// ── Drag & drop ───────────────────────────────────────────────────────────────
+const dz = document.getElementById('dropzone');
+dz.addEventListener('dragover', e => { e.preventDefault(); dz.classList.add('drag-over'); });
+dz.addEventListener('dragleave', () => dz.classList.remove('drag-over'));
+dz.addEventListener('drop', e => { e.preventDefault(); dz.classList.remove('drag-over'); handleFiles(e.dataTransfer.files); });
+document.getElementById('fileInput').addEventListener('change', e => handleFiles(e.target.files));
+
+function handleFiles(files) {
+  const pdfs = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.pdf'));
+  if (!pdfs.length) { setStatus('No se encontraron archivos PDF.'); return; }
+  loadedFiles = pdfs;
+  setStatus(`${pdfs.length} archivo(s) cargado(s). Haz clic en "Procesar PDFs".`);
+  document.getElementById('btnProcess').disabled = false;
+  dz.innerHTML = `<div class="icon">✅</div><p><strong>${pdfs.length} PDF(s)</strong> listos para procesar</p>`;
+}
+
+// ── Main ──────────────────────────────────────────────────────────────────────
+async function processPDFs() {
+  if (!loadedFiles.length) return;
+  results = []; debugLog = [];
+  document.getElementById('btnProcess').disabled = true;
+  document.getElementById('tableWrap').style.display = 'none';
+  document.getElementById('exportRow').style.display = 'none';
+  document.getElementById('summary').style.display = 'none';
+  document.getElementById('debugPanel').textContent = '';
+
+  const bar = document.getElementById('progressBar');
+  const fill = document.getElementById('progressFill');
+  bar.style.display = 'block';
+
+  for (let i = 0; i < loadedFiles.length; i++) {
+    const file = loadedFiles[i];
+    setStatus(`Procesando ${i + 1}/${loadedFiles.length}: ${file.name}`);
+    fill.style.width = ((i / loadedFiles.length) * 100) + '%';
+    try {
+      results.push(await extractFromPDF(file));
+    } catch (err) {
+      results.push({ filename: file.name, title: '(error)', authors: '', doi: null, dbg: err.message });
+    }
+  }
+
+  fill.style.width = '100%';
+  setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 500);
+  renderTable();
+  document.getElementById('debugPanel').textContent = debugLog.join('\n\n' + '─'.repeat(60) + '\n\n');
+  document.getElementById('btnProcess').disabled = false;
+}
+
+// ── Core extraction ───────────────────────────────────────────────────────────
+async function extractFromPDF(file) {
+  const buf = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
+
+  // Get page 1 items with full metadata
+  const page1 = await pdf.getPage(1);
+  const content = await page1.getTextContent({ includeMarkedContent: false });
+
+  // Enrich each item with parsed font size and position
+  const items = content.items
+    .filter(it => it.str && it.str.trim().length > 0)
+    .map(it => ({
+      str: it.str,
+      size: Math.round(Math.abs(it.transform[3]) * 10) / 10,
+      y:    Math.round(it.transform[5] * 10) / 10,
+      x:    Math.round(it.transform[4] * 10) / 10,
+      font: it.fontName || '',
+      bold: (it.fontName || '').toLowerCase().includes('bold'),
+    }));
+
+  // Build grouped text lines (same Y ± 2pt = same line)
+  const lines = buildLines(items);
+
+  // ── DEBUG header ──
+  const sizeMap = {};
+  items.forEach(it => { sizeMap[it.size] = (sizeMap[it.size] || 0) + it.str.trim().length; });
+  const topSizes = Object.entries(sizeMap).sort((a,b) => b[0]-a[0]).slice(0,8)
+    .map(([sz, len]) => `${sz}pt(${len}ch)`).join('  ');
+  let dbg = `📄 ${file.name}\nSizes on page1: ${topSizes}`;
+  dbg += '\n\nAll lines on page 1:';
+  lines.forEach((l,i) => dbg += `\n  [${i}] size=${l.size}pt y=${l.y} bold=${l.bold} | "${l.text}"`);
+
+  // ── Find TITLE ──
+  const { title, titleLineIdx } = findTitle(lines);
+  dbg += `\n\nTitle (line ${titleLineIdx}): "${title}"`;
+
+  // ── Find AUTHORS ──
+  let authors = findAuthors(lines, titleLineIdx);
+
+  // ── Fallback: buscar autores en el pie de página (estilo SCITEPRESS) ──────
+  // Formato: "Apellido, I, Apellido2, M. and Apellido3, H." en líneas inferiores
+  if (!authors) {
+    // Tomar las últimas 10 líneas de la página (pie de página)
+    const footerLines = lines.slice(-10);
+    for (const fl of footerLines) {
+      const ft = fl.text;
+      // Patrón: "Apellido, I." repetido — típico en citas al pie de SCITEPRESS
+      if (/^[A-Z][a-z]+,\s+[A-Z]\./.test(ft) && ft.length < 200) {
+        authors = cleanAuthors(ft);
+        if (authors) { dbg += `\nAuthors source: footer citation`; break; }
+      }
+    }
+  }
+  dbg += `\nAuthors: "${authors}"`;
+
+  // ── Find DOI — 4 estrategias en orden de confiabilidad ──────────────────────
+
+  // Estrategia 0 (MÁS CONFIABLE): extraer hyperlinks embebidos en el PDF
+  // pdf.js expone los links de la página en getAnnotations()
+  let doi = null;
+  try {
+    const annots = await page1.getAnnotations();
+    for (const ann of annots) {
+      // Los links DOI aparecen como "uri" en las anotaciones
+      const url = ann.url || ann.unsafeUrl || '';
+      if (/doi\.org/i.test(url)) {
+        doi = extractDOI(url);
+        if (doi) { dbg += `\nDOI source: hyperlink annotation`; break; }
+      }
+    }
+  } catch(e) { /* annotations not available */ }
+
+  const rawText = items.map(e => e.str).join(' ');
+
+  // Estrategia 1: líneas que contengan "doi.org" o "dx.doi.org"
+  if (!doi) {
+    const doiLines = lines.filter(l => /(?:dx\.)?doi\.org/i.test(l.text));
+    for (const dl of doiLines) {
+      doi = extractDOI(dl.text);
+      if (doi) { dbg += `\nDOI source: doi.org line`; break; }
+    }
+  }
+
+  // Estrategia 2: patrón "doi:10." o "doi. 10." en el texto completo pág. 1
+  if (!doi) {
+    doi = extractDOI(rawText);
+    if (doi) dbg += `\nDOI source: raw text page 1`;
+  }
+  dbg += `\nDOI: ${doi || 'not found'}`;
+
+  debugLog.push(dbg);
+  return { filename: file.name, title: title || '(no detectado)', authors: authors || '(no detectado)', doi };
+}
+
+// ── Build lines: group items by Y coordinate ──────────────────────────────────
+function buildLines(items) {
+  if (!items.length) return [];
+  const sorted = [...items].sort((a, b) => b.y - a.y || a.x - b.x); // top-to-bottom, left-to-right
+
+  const rows = [];
+  let cur = [sorted[0]];
+
+  for (let i = 1; i < sorted.length; i++) {
+    if (Math.abs(sorted[i].y - cur[0].y) <= 2.5) {
+      cur.push(sorted[i]);
+    } else {
+      rows.push(cur);
+      cur = [sorted[i]];
+    }
+  }
+  rows.push(cur);
+
+  return rows.map(row => {
+    const byX = row.sort((a, b) => a.x - b.x);
+    // Join items with smart spacing: add a space if the gap between items is > 1pt
+    // and the previous item doesn't already end with a space
+    let text = '';
+    for (let i = 0; i < byX.length; i++) {
+      const s = byX[i].str;
+      if (i === 0) { text += s; continue; }
+      const prev = byX[i - 1];
+      const gap = byX[i].x - (prev.x + prev.size * 0.5); // rough estimate of prev item width
+      const needsSpace = gap > 1 && !text.endsWith(' ') && !s.startsWith(' ');
+      text += (needsSpace ? ' ' : '') + s;
+    }
+    text = text.trim();
+    const size = Math.max(...byX.map(it => it.size));
+    const bold = byX.some(it => it.bold);
+    const y    = byX[0].y;
+    return { text, size, bold, y, items: byX };
+  }).filter(l => l.text.length > 0);
+}
+
+// ── JOURNAL / PUBLISHER names to skip as title ────────────────────────────────
+// If a line matches these patterns it's a journal/publisher header, not a title
+// "journal" anywhere in string (covers InternationalJournalof..., Journal of..., etc.)
+const JOURNAL_RE = /journal/i;
+
+// Multi-word journal/publisher name patterns:
+// Catches "Asia Pacific Management Review", "Tourism Management", "Computers in Human Behavior", etc.
+const JOURNAL_NAME_RE = new RegExp(
+  // Ends with these words (most journal names end in one of these)
+  '(?:review|reviews|research|science|sciences|management|behavior|behaviour|' +
+  'medicine|psychology|economics|marketing|tourism|technology|computing|' +
+  'communication|communications|education|policy|letters|quarterly|' +
+  'perspectives|practice|studies|analysis|transactions|applications|' +
+  'digest|gazette|chronicle|observer|monitor|times|press|publishing|' +
+  'futures|sustainability|innovation|innovations|health|business|hospitality|' +
+  'commerce|engineering|environment|environments|ethics|finance|governance|' +
+  'housing|informatics|law|leadership|media|networks|nutrition|oncology|' +
+  'pharmacology|physics|planning|psychiatry|safety|sociology|' +
+  'sports|strategy|transport|welfare|reports|simulations|gaming|' +
+  'telematics|cybernetics|ergonomics|gerontology|immunology|' +
+  'psychologica|biologica|clinica|medica|chimica|acta|botanica|zoologica)$|' +
+  // Geographic/scope openers
+  '^(?:asia|asian|european|american|british|chinese|latin|african|' +
+  'international|global|world|national|north|south|east|west|pacific|' +
+  'mediterranean|nordic|scandinavian|australian|canadian|sustainable|acta|telematics)\\s|' +
+  // Publisher names
+  '^(?:elsevier|springer|wiley|taylor|sage|emerald|mdpi|oxford|cambridge|' +
+  'routledge|palgrave|informa|frontiers|hindawi|nature|science|cell|' +
+  'sciencedirect|scopus|pubmed)\\b',
+  'i'
+);
+
+// Known single-word or short journal/publisher names that slip through
+const KNOWN_JOURNALS_RE = /^(Heliyon|Sustainability|Appetite|Nutrients|Foods|Sensors|Energies|Symmetry|Mathematics|Processes|Molecules|Animals|Viruses|Bacteria|Cancers|Cells|Genes|Water|Land|Forests|Agronomy|Plants|Antioxidants|Biomolecules|Metabolites|Polymers|Materials|Nanomaterials|Coatings|Lubricants|Minerals|Crystals|Atmosphere|Climate|Geosciences|Oceans|Universe|Galaxies|Entropy|Axioms|Computation|Algorithms|Informatics|Electronics|Actuators|Robotics|Machines|Aerospace|Vehicles|Infrastructures|Buildings|Energies|Environments|Toxics|Pathogens|Parasitologia|Zoonoses|Tropical|Vaccines|Diagnostics|Pharmaceutics|Pharmacy|Medicina|Healthcare|Nursing|Dentistry|Endocrines|Hematology|Neurology|Psychiatry|Dermato|Audiology|Orthopedics|Pediatrics|Geriatrics|Neuroscience|Ophthalmology|Psychosomatic|Biology|Biochemistry|Biophysics|Bioinformatics|Bioengineering|Biomedicines|Biomimetics|Biotech|Fermentation|Mycology|Horticulturae|Agriengineering|Vet|Fishes|Insects|Microorganisms|Prosthesis|Transplantation|Trauma|Surgery|Anesthesia|Epidemiologia|Endocrinology|Acta|Annals|Archives|Bulletin|Clinics|Contributions|Current|Discovery|Emerging|Evidence|Expert|Frontiers|Global|Highlights|Impact|Insights|Investigation|Life|Measurement|Nature|New|Open|Perspectives|Recent|Reports|Research|Review|Reviews|Science|Sciences|Signal|Systems|Trends|World)$/i;
+
+// Other skip patterns (headers, metadata, not titles)
+const SKIP_RE = /^\d+$|^issn|^vol\.|^volume|^issue|^pages|^pp\.|^©|^doi[:\s]|^https?:\/\/|^received|^accepted|^available online|^open access|^keywords|^abstract|^contents|^editor|^published|^revista\b|^proceedings\b|^frontiers in\b|^plos\b|^ieee\b|^acm\b|^elsevier\b|^springer\b|^wiley\b|^taylor\b|^sage\b|^emerald\b|^mdpi\b|^social sciences\s*&|^science direct|^sciencedirect/i;
+
+// ── Find title ────────────────────────────────────────────────────────────────
+function findTitle(lines) {
+  // Strategy:
+  // 1. Identify the dominant "body text" size (most common size = body)
+  // 2. Title = largest font size block that:
+  //    a. Is NOT a journal/publisher name
+  //    b. Has meaningful length (>15 chars)
+  //    c. Is not metadata/skip pattern
+  // 3. Allow multi-line title (consecutive lines at same size)
+
+  // Count chars per size to find body size
+  const sizeChars = {};
+  lines.forEach(l => { sizeChars[l.size] = (sizeChars[l.size] || 0) + l.text.length; });
+
+  // Sizes sorted descending
+  const sizes = Object.keys(sizeChars).map(Number).sort((a,b) => b-a);
+
+  // Find the best title size: largest size whose lines don't ALL look like journal names
+  for (const sz of sizes) {
+    if (sz < 9) continue; // too small to be a title
+
+    const candidateLines = lines.filter(l =>
+      Math.abs(l.size - sz) < 0.6 &&
+      l.text.length >= 4 &&
+      !SKIP_RE.test(l.text)
+    );
+
+    if (!candidateLines.length) continue;
+
+    // Filter out journal-name lines from candidates
+    const nonJournalLines = candidateLines.filter(l => {
+      const t = l.text.trim();
+      // Reject if contains "journal" anywhere (covers InternationalJournalof..., etc.)
+      if (JOURNAL_RE.test(t)) return false;
+      // Reject known multi-word journal/publisher name patterns
+      if (JOURNAL_NAME_RE.test(t)) return false;
+      // Reject known short/single-word journal names
+      if (KNOWN_JOURNALS_RE.test(t)) return false;
+      // Reject single-word titles (a real article title always has multiple words).
+      // A title with ":" counts as multi-word only if there are actual words on both sides.
+      // Strip the colon and check if there are at least 2 space-separated tokens.
+      const tokens = t.replace(/:/g, ' ').trim().split(/\s+/);
+      if (tokens.length < 2) return false;
+      return true;
+    });
+
+    if (!nonJournalLines.length) continue;
+
+    // Check: do we have enough text to be a real title? (at least 15 chars total)
+    const totalChars = nonJournalLines.reduce((s, l) => s + l.text.length, 0);
+    if (totalChars < 15) continue;
+
+    // Merge consecutive non-journal lines at this size into title segments
+    // Find the FIRST cluster of such lines in the page (topmost)
+    const sorted = nonJournalLines.sort((a, b) => b.y - a.y); // top first
+
+    // Build clusters: lines within 30pt of each other vertically = same title block
+    const clusters = [];
+    let cluster = [sorted[0]];
+    for (let i = 1; i < sorted.length; i++) {
+      if (Math.abs(sorted[i].y - cluster[cluster.length-1].y) < 35) {
+        cluster.push(sorted[i]);
+      } else {
+        clusters.push(cluster);
+        cluster = [sorted[i]];
+      }
+    }
+    clusters.push(cluster);
+
+    // Pick first cluster (topmost on page)
+    const titleLines = clusters[0];
+    const title = titleLines
+      .sort((a, b) => b.y - a.y)
+      .map(l => l.text)
+      .join(' ')
+      .replace(/\s*:\s*/g, ': ')   // normalize spaces around colons
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    // Find the index of the last title line in the original lines array
+    const lastTitleY = Math.min(...titleLines.map(l => l.y));
+    const titleLineIdx = lines.findIndex(l => Math.abs(l.y - lastTitleY) < 2);
+
+    return { title, titleLineIdx: titleLineIdx >= 0 ? titleLineIdx : 0 };
+  }
+
+  return { title: '', titleLineIdx: 0 };
+}
+
+// ── Find authors ──────────────────────────────────────────────────────────────
+const AFFILIATION_RE = /universit|department|faculty|school|institute|hospital|college|centro|departamento|facultad|escuela|laborator|research centre|research center|ministry|ministerio|business school|graduate school|polytechnic|academia|institute of|national\s+\w+\s+university|^email|^e-mail|^correspondence|^corresponding|orcid\.org|http:\/\/orcid/i;
+
+function findAuthors(lines, titleLineIdx) {
+  const afterTitle = lines.slice(titleLineIdx + 1, titleLineIdx + 25);
+
+  // ── Estrategia A: formato repositorio (Citation for published version:) ──────
+  // Detecta líneas tipo "Bore, I, Rutherford, C, Glasgow, S..." en bibliografía
+  for (const line of afterTitle) {
+    const t = line.text;
+    if (/citation for published version/i.test(t)) {
+      // La línea siguiente al título/cita suele tener los autores en formato apellido, inicial
+      const nextLines = afterTitle.slice(afterTitle.indexOf(line) + 1, afterTitle.indexOf(line) + 4);
+      for (const nl of nextLines) {
+        const nt = nl.text;
+        // Formato: "Apellido, I, Apellido2, J, ..." — muchas comas, sin afiliación
+        if (/([A-Z][a-z]+,\s*[A-Z](?:\s*,\s*)?){2,}/.test(nt)) {
+          return cleanAuthors(nt);
+        }
+      }
+    }
+  }
+
+  // ── Estrategia B: una línea con múltiples autores (caso más común) ──────────
+  for (const line of afterTitle) {
+    const t = line.text;
+    if (!isValidAuthorLine(t)) continue;
+    const nameHits = countNames(t);
+    if (nameHits >= 2) return cleanAuthors(t);
+  }
+
+  // ── Estrategia B2: líneas con autor+afiliación inline ─────────────────────
+  // Patrón: "Dao Thi Bich Nguyen, Faculty of Social Sciences..., Vietnam*"
+  // Extrae el nombre antes del primer indicador de afiliación
+  const inlineAuthorParts = [];
+  for (const line of afterTitle) {
+    const t = line.text;
+    if (!t || t.length < 3) continue;
+    // Línea larga que contiene afiliación embedded
+    if (!/universit|faculty|department|institute|school|college/i.test(t)) continue;
+    // Intenta extraer la parte inicial (antes de la coma+afiliación)
+    const nameMatch = t.match(/^([A-ZÁÉÍÓÚÑÜ][a-záéíóúñü-]+(?:\s+[A-Za-záéíóúñü-]+){1,4})/);
+    if (nameMatch) {
+      const candidate = nameMatch[1].trim();
+      // Debe tener al menos 2 palabras y no ser una afiliación en sí
+      if (candidate.split(/\s+/).length >= 2 && !AFFILIATION_RE.test(candidate)) {
+        inlineAuthorParts.push(cleanAuthors(candidate));
+      }
+    }
+  }
+  if (inlineAuthorParts.length > 0) {
+    return inlineAuthorParts.join(', ');
+  }
+
+  // ── Estrategia C: autores en líneas separadas (un autor por línea) ──────────
+  // Acumula líneas consecutivas que sean nombres válidos, saltando afiliaciones
+  const authorParts = [];
+  let foundFirst = false;
+  let skippedAffiliations = 0;
+
+  for (const line of afterTitle) {
+    const t = line.text;
+
+    // Si ya encontramos al menos un autor, parar si encontramos abstract/keywords
+    if (foundFirst && /^(?:abstract|keywords|resumen|palabras clave|introduction|\d+\s+introduction)/i.test(t)) break;
+
+    // Saltar afiliaciones pero no parar (puede haber más autores después)
+    if (AFFILIATION_RE.test(t)) {
+      if (foundFirst) skippedAffiliations++;
+      if (skippedAffiliations > 4) break; // demasiadas afiliaciones = ya no hay autores
+      continue;
+    }
+
+    if (!isValidAuthorLine(t)) continue;
+    const nameHits = countNames(t);
+    if (nameHits >= 1) {
+      authorParts.push(cleanAuthors(t));
+      foundFirst = true;
+      skippedAffiliations = 0;
+    } else if (foundFirst) {
+      break; // línea inválida después de haber encontrado autores = fin del bloque
+    }
+  }
+
+  if (authorParts.length > 0) {
+    return authorParts.join(', ').replace(/,\s*,/g, ',').replace(/^,|,$/g, '').trim();
+  }
+
+  // ── Estrategia D: un solo autor (nameHits >= 1) ──────────────────────────────
+  for (const line of afterTitle) {
+    const t = line.text;
+    if (!isValidAuthorLine(t)) continue;
+    if (countNames(t) >= 1) return cleanAuthors(t);
+  }
+
+  return '';
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function isValidAuthorLine(t) {
+  if (!t || t.length < 3 || t.length > 300) return false;
+  if (JOURNAL_RE.test(t)) return false;
+  if (JOURNAL_NAME_RE.test(t)) return false;
+  if (KNOWN_JOURNALS_RE.test(t)) return false;
+  if (t.length > 20 && !/\s/.test(t)) return false;
+  if (AFFILIATION_RE.test(t)) return false;
+  if (SKIP_RE.test(t)) return false;
+  if (/^(research article|original article|review article|systematic review|meta.?analysis|case report|letter|commentary|editorial|short communication|technical note|brief report|peer reviewed|digital object identifier|document version|published in|general rights|citation for|link:|doi:)\s*$/i.test(t)) return false;
+  // Skip lines starting with http (ORCID links, journal URLs)
+  if (/^https?:\/\//i.test(t)) return false;
+  // Skip lines that look like subtitles (start with capital, have "From/Of/In/A/The/An" structure, no comma)
+  if (/^(?:Evidence|Results|Data|Case|A Study|An Analysis|The Role|The Impact|The Effect|The Influence)\b/i.test(t) && !t.includes(',')) return false;
+  if (t.length > 80 && /\b(the|of|and|for|with|in|on|among|between|using|through|by|from|to|an|a)\b/i.test(t)) return false;
+  if (/^[\d\s,.*†‡§#@]+$/.test(t.replace(/\*/g, 'x'))) return false;
+  if (t.length > 120 && t.endsWith('.')) return false;
+  if (/@/.test(t)) return false;
+  if (/^\*?\s*correspondence|^\*?\s*corresponding author/i.test(t)) return false;
+  // Skip lines that are clearly bold/italic section headers (Received:, Available online:, etc.)
+  if (/^(?:received|accepted|available online|published online|revised)/i.test(t)) return false;
+  return true;
+}
+
+function countNames(t) {
+  const hits = t.match(/[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü-]{1,25}(?:\s+[A-ZÁÉÍÓÚÑÜ][a-záéíóúñü-]{0,25}){0,3}/g) || [];
+  return hits.length;
+}
+
+function cleanAuthors(t) {
+  return t
+    .replace(/\*/g, '')
+    .replace(/[†‡§¶#@]/g, '')
+    // Superíndices Unicode (¹²³ etc.) — eliminar primero
+    .replace(/[¹²³⁴⁵⁶⁷⁸⁹⁰ⁱᵃᵇᶜᵈᵉᶠᵍʰʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ]/g, '')
+    // Superíndices dígito ASCII pegados al final de apellido: "Herodotou1" → "Herodotou,"
+    // Solo elimina dígitos inmediatamente después de letra minúscula, seguidos de coma/espacio/nombre
+    .replace(/([a-záéíóúñü])([\d]+(?:,[\d]+)*)(?=\s*[,\s]|\s+[A-ZÁÉÍÓÚÑÜ]|$)/g, '$1,')
+    // Superíndices letra ASCII de UNA sola letra (a,b,c) con espacio antes del siguiente nombre
+    // Patrón estricto: espacio + letra_sola + coma_opcional + más_letras_solas + espacio + Mayúscula
+    .replace(/\s+([a-z])(?:\s*,\s*[a-z])*(?=\s+[A-ZÁÉÍÓÚÑÜ])/g, ',')
+    // Superíndices letra sola al final de línea
+    .replace(/\s+[a-z](?:\s*,\s*[a-z])*\s*$/g, '')
+    // "and" entre autores → coma
+    .replace(/\s+and\s+/gi, ', ')
+    // Limpiar emails
+    .replace(/\S+@\S+/g, '')
+    .replace(/\s{2,}/g, ' ')
+    .replace(/,\s*,/g, ',')
+    .replace(/^,\s*|,\s*$/g, '')
+    .trim();
+}
+
+// ── DOI extraction ─────────────────────────────────────────────────────────────
+function extractDOI(text) {
+  const t = text.replace(/\s+/g, ' ');
+  const pats = [
+    // dx.doi.org/10. o doi.org/10. (con o sin http/https)
+    /https?:\/\/(?:dx\.)?doi\.org\/(10\.\d{4,9}\/[^\s"'<>\]]+)/gi,
+    // doi: 10. o doi:10. (con o sin espacio tras los dos puntos)
+    /\bdoi\s*:\s*(10\.\d{4,9}\/[^\s"'<>\]]+)/gi,
+    // doi. 10. — OCR artifact: punto + espacio entre "doi" y el número
+    /\bdoi\.\s+(10\.\d{4,9}\/[^\s"'<>\]]+)/gi,
+    // bare 10.xxxx/... sin prefijo
+    /\b(10\.\d{4,9}\/[^\s"'<>\]]{4,})/gi,
+  ];
+  for (const p of pats) {
+    p.lastIndex = 0;
+    const m = p.exec(t);
+    if (m) {
+      let doi = m[1].replace(/^https?:\/\/(?:dx\.)?doi\.org\//i, '');
+      return doi.replace(/[.,;)\]]+$/, '').trim();
+    }
+  }
+  return null;
+}
+
+// ── Render table ───────────────────────────────────────────────────────────────
+function renderTable() {
+  const tbody = document.getElementById('tableBody');
+  tbody.innerHTML = '';
+  let found = 0, missing = 0;
+  pendingFetches = 0;
+
+  results.forEach((r, i) => {
+    if (r.doi) found++; else missing++;
+    const tr = document.createElement('tr');
+
+    // DOI cell
+    let doiCellHtml;
+    if (r.doi) {
+      const safeId = 'doi_' + i;
+      const fullDoi = 'https://doi.org/' + r.doi;
+      doiCellHtml = `
+        <a class="doi-link" href="${esc(fullDoi)}" target="_blank">${esc(fullDoi)}</a>
+        <button class="btn-copy" id="${safeId}" onclick="copyDOI('${esc(fullDoi)}','${safeId}')">Copiar</button>
+      `;
+    } else {
+      doiCellHtml = `<span class="not-found">No encontrado</span>`;
+    }
+
+    // APA cell — placeholder while loading
+    const apaCellId = 'apa_' + i;
+    const apaCellHtml = r.doi
+      ? `<div id="${apaCellId}"><span class="apa-loading">⟳ Consultando CrossRef...</span></div>`
+      : `<div id="${apaCellId}"><span class="apa-error">Sin DOI — no disponible</span></div>`;
+
+    tr.innerHTML = `
+      <td class="num-cell">${i + 1}</td>
+      <td>${esc(r.title)}</td>
+      <td>${esc(r.authors)}</td>
+      <td class="doi-cell">${doiCellHtml}</td>
+      <td class="apa-cell">${apaCellHtml}</td>
+      <td><span class="filename-tag" title="${esc(r.filename)}">${esc(r.filename)}</span></td>
+    `;
+    tbody.appendChild(tr);
+
+    // Fetch CrossRef asynchronously for each row with DOI
+    if (r.doi) { pendingFetches++; fetchCrossRef(r.doi, apaCellId, i); }
+  });
+
+  document.getElementById('cntFound').textContent = found;
+  document.getElementById('cntMissing').textContent = missing;
+  document.getElementById('cntTotal').textContent = results.length;
+  document.getElementById('summary').style.display = 'flex';
+  document.getElementById('tableWrap').style.display = 'block';
+  document.getElementById('exportRow').style.display = 'flex';
+  setStatus(`✓ Listo. ${found} DOI encontrados, ${missing} sin DOI. Consultando CrossRef...`);
+}
+
+// ── CrossRef API ───────────────────────────────────────────────────────────────
+const crossrefCache = {};
+let pendingFetches = 0;
+
+async function fetchCrossRef(doi, cellId, rowIdx) {
+  const cell = document.getElementById(cellId);
+  if (!cell) return;
+
+  if (crossrefCache[doi]) {
+    renderApaCell(cell, crossrefCache[doi], doi, rowIdx);
+    checkAllDone();
+    return;
+  }
+
+  try {
+    // CrossRef REST API — CORS habilitado para navegadores
+    // Usar polite pool con mailto para mejor disponibilidad
+    const url = `https://api.crossref.org/works/${encodeURIComponent(doi)}`;
+    const resp = await fetch(url, {
+      headers: {
+        'User-Agent': 'AntoMaticTools/1.0 (mailto:lirio@unasam.edu.pe)',
+        'Accept': 'application/json'
+      },
+      mode: 'cors'
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const json = await resp.json();
+    const msg = json.message;
+    crossrefCache[doi] = msg;
+    results[rowIdx].crossref = msg;
+    renderApaCell(cell, msg, doi, rowIdx);
+  } catch(e) {
+    // Fallback: doi.org content negotiation (citeproc JSON)
+    try {
+      const resp2 = await fetch(`https://doi.org/${encodeURIComponent(doi)}`, {
+        headers: { 'Accept': 'application/vnd.citationstyles.csl+json' },
+        mode: 'cors'
+      });
+      if (!resp2.ok) throw new Error(`doi.org HTTP ${resp2.status}`);
+      const csl = await resp2.json();
+      // Convertir CSL → formato CrossRef-like
+      const msg = cslToCrossref(csl, doi);
+      crossrefCache[doi] = msg;
+      results[rowIdx].crossref = msg;
+      renderApaCell(cell, msg, doi, rowIdx);
+    } catch(e2) {
+      results[rowIdx].fetchError = true;
+      cell.innerHTML = `
+        <span class="apa-error" title="${esc(e2.message)}">⚠ No disponible — sin conexión o DOI no registrado</span>
+        <br><button class="btn-ris btn-ris-na" disabled title="Requiere datos de CrossRef">⬇ RIS</button>
+      `;
+    }
+  }
+  checkAllDone();
+}
+
+function checkAllDone() {
+  pendingFetches--;
+  if (pendingFetches <= 0) {
+    setStatus(`✓ CrossRef completado. ${results.filter(r=>r.meta).length} con metadatos, ${results.filter(r=>r.fetchError).length} sin datos.`);
+    reorderRows();
+  }
+}
+
+// ── Reordenar filas: con metadatos primero, errores al final ──────────────────
+function reorderRows() {
+  const tbody = document.getElementById('tableBody');
+  const rows = Array.from(tbody.querySelectorAll('tr'));
+
+  // Separar en dos grupos según si tienen apa-box o no
+  const withMeta  = rows.filter(tr => tr.querySelector('.apa-box'));
+  const withError = rows.filter(tr => !tr.querySelector('.apa-box'));
+
+  // Reinsertar: primero los que tienen datos, luego los fallidos
+  withMeta.forEach(tr => tbody.appendChild(tr));
+  withError.forEach(tr => tbody.appendChild(tr));
+
+  // Renumerar la columna #
+  tbody.querySelectorAll('tr').forEach((tr, idx) => {
+    const numCell = tr.querySelector('.num-cell');
+    if (numCell) numCell.textContent = idx + 1;
+  });
+}
+
+// ── Convertir CSL JSON → estructura compatible con parseCrossRef ──────────────
+function cslToCrossref(csl, doi) {
+  const authors = (csl.author || []).map(a => ({
+    family: a.family || '',
+    given:  a.given  || ''
+  }));
+  const dateParts = csl.issued?.['date-parts']?.[0] || [];
+  return {
+    author: authors,
+    published: { 'date-parts': [dateParts] },
+    title: [csl.title || ''],
+    'container-title': [csl['container-title'] || csl.publisher || ''],
+    volume: csl.volume || '',
+    issue:  csl.issue  || '',
+    page:   csl.page   || '',
+    DOI:    doi
+  };
+}
+
+function renderApaCell(cell, msg, doi, rowIdx) {
+  const meta = parseCrossRef(msg, doi);
+  results[rowIdx].meta = meta;
+
+  const apaRef = buildAPA(meta);
+  const risId  = 'ris_' + rowIdx;
+
+  cell.innerHTML = `
+    <div class="apa-box">
+      <div class="apa-field"><span class="apa-label">Autores</span><span class="apa-value">${esc(meta.authors)}</span></div>
+      <div class="apa-field"><span class="apa-label">Año</span><span class="apa-value">${esc(meta.year)}</span></div>
+      <div class="apa-field"><span class="apa-label">Título</span><span class="apa-value">${esc(meta.title)}</span></div>
+      <div class="apa-field"><span class="apa-label">Revista</span><span class="apa-value">${esc(meta.journal)}</span></div>
+      <div class="apa-field"><span class="apa-label">Vol/N°</span><span class="apa-value">${esc(meta.volume)}${meta.issue ? '('+esc(meta.issue)+')' : ''}</span></div>
+      <div class="apa-field"><span class="apa-label">Páginas</span><span class="apa-value">${esc(meta.pages)}</span></div>
+      <div class="apa-ref">${esc(apaRef)}</div>
+    </div>
+    <button class="btn-ris" id="${risId}" onclick="downloadRIS(${rowIdx})">⬇ Descargar RIS</button>
+  `;
+}
+
+// ── Parse CrossRef message → meta object ──────────────────────────────────────
+function parseCrossRef(msg, doi) {
+  // Authors
+  const authorList = (msg.author || []).map(a => {
+    if (a.family && a.given) return `${a.family}, ${a.given.charAt(0)}.`;
+    if (a.family) return a.family;
+    if (a.name)   return a.name;
+    return '';
+  }).filter(Boolean);
+  const authors = authorList.join(', ') || '—';
+
+  // Year
+  const dateParts = msg.published?.['date-parts']?.[0]
+    || msg['published-print']?.['date-parts']?.[0]
+    || msg['published-online']?.['date-parts']?.[0]
+    || [];
+  const year = dateParts[0] ? String(dateParts[0]) : '—';
+
+  // Title
+  const title = (msg.title?.[0] || '—').replace(/<[^>]+>/g, '');
+
+  // Journal
+  const journal = (msg['container-title']?.[0] || msg['short-container-title']?.[0] || '—').replace(/<[^>]+>/g, '');
+
+  // Volume, issue, pages
+  const volume = msg.volume || '—';
+  const issue  = msg.issue  || '';
+  const pages  = msg.page   || '—';
+
+  return { authors, authorList, year, title, journal, volume, issue, pages, doi };
+}
+
+// ── Build APA 7 reference string ──────────────────────────────────────────────
+function buildAPA(m) {
+  // Autores APA: Apellido, I., Apellido2, I2., ...
+  const authStr = m.authorList.length > 0
+    ? m.authorList.join(', ')
+    : m.authors;
+
+  const vol   = m.volume !== '—' ? m.volume : '';
+  const iss   = m.issue  ? `(${m.issue})` : '';
+  const pg    = m.pages  !== '—' ? `, ${m.pages}` : '';
+  const volPart = (vol || iss) ? ` ${vol}${iss}${pg}` : '';
+
+  return `${authStr} (${m.year}). ${m.title}. ${m.journal},${volPart}. https://doi.org/${m.doi}`;
+}
+
+// ── Download RIS for single row ────────────────────────────────────────────────
+function downloadRIS(rowIdx) {
+  const r = results[rowIdx];
+  if (!r || !r.meta) return;
+  const m = r.meta;
+
+  const lines = [
+    'TY  - JOUR',
+    ...( m.authorList.length > 0
+      ? m.authorList.map(a => `AU  - ${a}`)
+      : [`AU  - ${m.authors}`] ),
+    `PY  - ${m.year}`,
+    `TI  - ${m.title}`,
+    `JO  - ${m.journal}`,
+    m.volume !== '—' ? `VL  - ${m.volume}` : '',
+    m.issue           ? `IS  - ${m.issue}`  : '',
+    m.pages  !== '—' ? `SP  - ${m.pages.split('-')[0]}` : '',
+    m.pages  !== '—' && m.pages.includes('-') ? `EP  - ${m.pages.split('-')[1]}` : '',
+    `DO  - ${m.doi}`,
+    `UR  - https://doi.org/${m.doi}`,
+    'ER  - ',
+  ].filter(l => l !== '');
+
+  const slug = m.title.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 40);
+  download(`${slug}_${m.year}.ris`, lines.join('\r\n'), 'application/x-research-info-systems');
+}
+
+// ── Export all RIS ─────────────────────────────────────────────────────────────
+function exportAllRIS() {
+  const withMeta = results.filter(r => r.meta);
+  if (!withMeta.length) { alert('Aún no hay datos de CrossRef cargados. Espera a que terminen de cargar.'); return; }
+
+  const allLines = withMeta.map((r, i) => {
+    const m = r.meta;
+    return [
+      'TY  - JOUR',
+      ...( m.authorList.length > 0
+        ? m.authorList.map(a => `AU  - ${a}`)
+        : [`AU  - ${m.authors}`] ),
+      `PY  - ${m.year}`,
+      `TI  - ${m.title}`,
+      `JO  - ${m.journal}`,
+      m.volume !== '—' ? `VL  - ${m.volume}` : '',
+      m.issue           ? `IS  - ${m.issue}`  : '',
+      m.pages  !== '—' ? `SP  - ${m.pages.split('-')[0]}` : '',
+      m.pages  !== '—' && m.pages.includes('-') ? `EP  - ${m.pages.split('-')[1]}` : '',
+      `DO  - ${m.doi}`,
+      `UR  - https://doi.org/${m.doi}`,
+      'ER  - ',
+    ].filter(l => l !== '').join('\r\n');
+  }).join('\r\n\r\n');
+
+  download('AntoMatic_Referencias_' + dateStr() + '.ris', allLines, 'application/x-research-info-systems');
+}
+
+// ── Copy DOI button ────────────────────────────────────────────────────────────
+function copyDOI(doi, btnId) {
+  navigator.clipboard.writeText(doi).then(() => {
+    const btn = document.getElementById(btnId);
+    if (!btn) return;
+    btn.textContent = '✓ Copiado';
+    btn.classList.add('copied');
+    setTimeout(() => {
+      btn.textContent = 'Copiar';
+      btn.classList.remove('copied');
+    }, 2000);
+  }).catch(() => {
+    // Fallback for older browsers
+    const ta = document.createElement('textarea');
+    ta.value = doi; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
+    const btn = document.getElementById(btnId);
+    if (btn) { btn.textContent = '✓ Copiado'; btn.classList.add('copied'); }
+    setTimeout(() => {
+      const b = document.getElementById(btnId);
+      if (b) { b.textContent = 'Copiar'; b.classList.remove('copied'); }
+    }, 2000);
+  });
+}
+
+// ── Debug toggle ───────────────────────────────────────────────────────────────
+function toggleDebug() {
+  const p = document.getElementById('debugPanel');
+  p.style.display = p.style.display === 'block' ? 'none' : 'block';
+}
+
+// ── Exports ────────────────────────────────────────────────────────────────────
+function exportCSV() {
+  const hdr = 'N°,Título,Autores,DOI,Archivo\n';
+  const rows = results.map((r, i) =>
+    [i+1, csvQ(r.title), csvQ(r.authors), r.doi ? 'https://doi.org/'+r.doi : '', csvQ(r.filename)].join(',')
+  ).join('\n');
+  download('AntoMatic_DOI_' + dateStr() + '.csv', hdr + rows, 'text/csv');
+}
+function exportTXT() {
+  const sep = '─'.repeat(70);
+  const lines = results.map((r, i) =>
+    `[${i+1}] ${r.title}\n     Autores: ${r.authors}\n     DOI:     ${r.doi ? 'https://doi.org/'+r.doi : 'No encontrado'}\n     Archivo: ${r.filename}`
+  ).join('\n' + sep + '\n');
+  download('AntoMatic_DOI_' + dateStr() + '.txt', lines, 'text/plain');
+}
+function exportDOIs() {
+  const lines = results.filter(r => r.doi).map(r => `https://doi.org/${r.doi}`).join('\n');
+  download('AntoMatic_DOIs_' + dateStr() + '.txt', lines, 'text/plain');
+}
+function download(name, content, mime) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob(['\uFEFF' + content], { type: mime + ';charset=utf-8' }));
+  a.download = name; a.click();
+}
+
+// ── Utils ──────────────────────────────────────────────────────────────────────
+function clearAll() {
+  loadedFiles = []; results = []; debugLog = [];
+  document.getElementById('fileInput').value = '';
+  ['tableWrap','exportRow'].forEach(id => document.getElementById(id).style.display = 'none');
+  document.getElementById('summary').style.display = 'none';
+  document.getElementById('debugPanel').textContent = '';
+  document.getElementById('btnProcess').disabled = true;
+  dz.innerHTML = '<div class="icon">📄</div><p><strong>Clic aquí</strong> o arrastra y suelta tus archivos PDF</p><p>Hasta 50 PDFs a la vez</p>';
+  setStatus('');
+}
+function setStatus(msg) { document.getElementById('statusMsg').textContent = msg; }
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function csvQ(s) { return '"' + (s||'').replace(/"/g,'""') + '"'; }
+function dateStr() { const d = new Date(); return d.getFullYear()+('0'+(d.getMonth()+1)).slice(-2)+('0'+d.getDate()).slice(-2); }
+</script>
+</body>
+</html>
