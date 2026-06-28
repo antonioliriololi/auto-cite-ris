@@ -175,10 +175,11 @@
 </div>
 
 <div class="export-row" id="exportRow">
-  <button onclick="exportCSV()">⬇ Exportar CSV</button>
-  <button class="secondary" onclick="exportTXT()">⬇ Exportar TXT</button>
+  <button onclick="exportCSV()">⬇ CSV</button>
+  <button class="secondary" onclick="exportTXT()">⬇ TXT</button>
   <button class="secondary" onclick="exportDOIs()">⬇ Solo DOIs</button>
-  <button onclick="exportAllRIS()" style="background:#1a7a3f;border-color:#1a7a3f;">⬇ Exportar TODO .RIS</button>
+  <button onclick="exportAllRIS()" style="background:#1a7a3f;border-color:#1a7a3f;">⬇ TODO .RIS</button>
+  <button onclick="exportAllBibTeX()" style="background:#1a4a7a;border-color:#1a4a7a;">⬇ TODO .BibTeX</button>
 </div>
 
 <footer>AntoMatic Cite &amp; RIS · Dr. Félix Antonio Lirio Loli · EPG UNASAM · Datos vía CrossRef API · Uso académico</footer>
@@ -729,7 +730,8 @@ function renderTable() {
   setStatus(`✓ Listo. ${found} DOI encontrados, ${missing} sin DOI. Consultando CrossRef...`);
 }
 
-// ── CrossRef API ───────────────────────────────────────────────────────────────
+// ── CrossRef via DOI Content Negotiation ──────────────────────────────────────
+// doi.org soporta CORS y devuelve citas pre-formateadas por CrossRef
 const crossrefCache = {};
 let pendingFetches = 0;
 
@@ -743,52 +745,70 @@ async function fetchCrossRef(doi, cellId, rowIdx) {
     return;
   }
 
+  const base = `https://doi.org/${encodeURIComponent(doi)}`;
+
   try {
-    // CrossRef REST API — CORS habilitado para navegadores
-    // Usar polite pool con mailto para mejor disponibilidad
-    const url = `https://api.crossref.org/works/${encodeURIComponent(doi)}`;
-    const resp = await fetch(url, {
-      headers: {
-        'User-Agent': 'AntoMaticTools/1.0 (mailto:lirio@unasam.edu.pe)',
-        'Accept': 'application/json'
-      },
-      mode: 'cors'
-    });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const json = await resp.json();
-    const msg = json.message;
-    crossrefCache[doi] = msg;
-    results[rowIdx].crossref = msg;
-    renderApaCell(cell, msg, doi, rowIdx);
+    // Paso 1: obtener metadatos estructurados (CSL JSON) — soporta CORS
+    const [cslResp, apaResp, bibResp] = await Promise.all([
+      fetch(base, { headers: { 'Accept': 'application/vnd.citationstyles.csl+json' } }),
+      fetch(base, { headers: { 'Accept': 'text/x-bibliography; style=apa' } }),
+      fetch(base, { headers: { 'Accept': 'application/x-bibtex' } }),
+    ]);
+
+    if (!cslResp.ok) throw new Error(`doi.org ${cslResp.status}`);
+
+    const csl     = await cslResp.json();
+    const apaText = apaResp.ok  ? (await apaResp.text()).trim()  : null;
+    const bibText = bibResp.ok  ? (await bibResp.text()).trim()  : null;
+
+    const cached = { csl, apaText, bibText, doi };
+    crossrefCache[doi] = cached;
+    results[rowIdx].crossref = cached;
+    renderApaCell(cell, cached, doi, rowIdx);
+
   } catch(e) {
-    // Fallback: doi.org content negotiation (citeproc JSON)
+    // Fallback: CrossRef REST API directa
     try {
-      const resp2 = await fetch(`https://doi.org/${encodeURIComponent(doi)}`, {
-        headers: { 'Accept': 'application/vnd.citationstyles.csl+json' },
-        mode: 'cors'
-      });
-      if (!resp2.ok) throw new Error(`doi.org HTTP ${resp2.status}`);
-      const csl = await resp2.json();
-      // Convertir CSL → formato CrossRef-like
-      const msg = cslToCrossref(csl, doi);
-      crossrefCache[doi] = msg;
-      results[rowIdx].crossref = msg;
-      renderApaCell(cell, msg, doi, rowIdx);
+      const resp2 = await fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`);
+      if (!resp2.ok) throw new Error(`crossref ${resp2.status}`);
+      const json = await resp2.json();
+      const csl  = crossrefMsgToCSL(json.message, doi);
+      const cached = { csl, apaText: null, bibText: null, doi };
+      crossrefCache[doi] = cached;
+      results[rowIdx].crossref = cached;
+      renderApaCell(cell, cached, doi, rowIdx);
     } catch(e2) {
       results[rowIdx].fetchError = true;
       cell.innerHTML = `
-        <span class="apa-error" title="${esc(e2.message)}">⚠ No disponible — sin conexión o DOI no registrado</span>
-        <br><button class="btn-ris btn-ris-na" disabled title="Requiere datos de CrossRef">⬇ RIS</button>
+        <span class="apa-error">⚠ Sin conexión o DOI no registrado en CrossRef</span>
+        <br><button class="btn-ris btn-ris-na" disabled>⬇ RIS</button>
+        <button class="btn-ris btn-ris-na" disabled style="margin-left:4px">⬇ BibTeX</button>
       `;
     }
   }
   checkAllDone();
 }
 
+// Convertir CrossRef REST message → CSL JSON simplificado
+function crossrefMsgToCSL(msg, doi) {
+  return {
+    author: (msg.author||[]).map(a=>({ family:a.family||'', given:a.given||'' })),
+    issued: { 'date-parts': msg.published?.['date-parts'] || msg['published-print']?.['date-parts'] || [[]] },
+    title: (msg.title||[''])[0],
+    'container-title': (msg['container-title']||[''])[0],
+    volume: msg.volume||'',
+    issue:  msg.issue||'',
+    page:   msg.page||'',
+    DOI: doi
+  };
+}
+
 function checkAllDone() {
   pendingFetches--;
   if (pendingFetches <= 0) {
-    setStatus(`✓ CrossRef completado. ${results.filter(r=>r.meta).length} con metadatos, ${results.filter(r=>r.fetchError).length} sin datos.`);
+    const ok  = results.filter(r => r.meta).length;
+    const err = results.filter(r => r.fetchError).length;
+    setStatus(`✓ Completado. ${ok} con metadatos CrossRef${err ? `, ${err} sin datos` : ''}.`);
     reorderRows();
   }
 }
@@ -796,48 +816,27 @@ function checkAllDone() {
 // ── Reordenar filas: con metadatos primero, errores al final ──────────────────
 function reorderRows() {
   const tbody = document.getElementById('tableBody');
-  const rows = Array.from(tbody.querySelectorAll('tr'));
-
-  // Separar en dos grupos según si tienen apa-box o no
-  const withMeta  = rows.filter(tr => tr.querySelector('.apa-box'));
+  const rows  = Array.from(tbody.querySelectorAll('tr'));
+  const withMeta  = rows.filter(tr =>  tr.querySelector('.apa-box'));
   const withError = rows.filter(tr => !tr.querySelector('.apa-box'));
-
-  // Reinsertar: primero los que tienen datos, luego los fallidos
-  withMeta.forEach(tr => tbody.appendChild(tr));
+  withMeta.forEach(tr  => tbody.appendChild(tr));
   withError.forEach(tr => tbody.appendChild(tr));
-
-  // Renumerar la columna #
   tbody.querySelectorAll('tr').forEach((tr, idx) => {
-    const numCell = tr.querySelector('.num-cell');
-    if (numCell) numCell.textContent = idx + 1;
+    const c = tr.querySelector('.num-cell');
+    if (c) c.textContent = idx + 1;
   });
 }
 
-// ── Convertir CSL JSON → estructura compatible con parseCrossRef ──────────────
-function cslToCrossref(csl, doi) {
-  const authors = (csl.author || []).map(a => ({
-    family: a.family || '',
-    given:  a.given  || ''
-  }));
-  const dateParts = csl.issued?.['date-parts']?.[0] || [];
-  return {
-    author: authors,
-    published: { 'date-parts': [dateParts] },
-    title: [csl.title || ''],
-    'container-title': [csl['container-title'] || csl.publisher || ''],
-    volume: csl.volume || '',
-    issue:  csl.issue  || '',
-    page:   csl.page   || '',
-    DOI:    doi
-  };
-}
-
-function renderApaCell(cell, msg, doi, rowIdx) {
-  const meta = parseCrossRef(msg, doi);
+function renderApaCell(cell, cached, doi, rowIdx) {
+  const { csl, apaText, bibText } = cached;
+  const meta = parseCSL(csl, doi);
+  meta.bibText = bibText;
   results[rowIdx].meta = meta;
 
-  const apaRef = buildAPA(meta);
+  // Usar cita APA directa de doi.org si está disponible, sino construirla
+  const apaRef = apaText || buildAPA(meta);
   const risId  = 'ris_' + rowIdx;
+  const bibId  = 'bib_' + rowIdx;
 
   cell.innerHTML = `
     <div class="apa-box">
@@ -845,18 +844,23 @@ function renderApaCell(cell, msg, doi, rowIdx) {
       <div class="apa-field"><span class="apa-label">Año</span><span class="apa-value">${esc(meta.year)}</span></div>
       <div class="apa-field"><span class="apa-label">Título</span><span class="apa-value">${esc(meta.title)}</span></div>
       <div class="apa-field"><span class="apa-label">Revista</span><span class="apa-value">${esc(meta.journal)}</span></div>
-      <div class="apa-field"><span class="apa-label">Vol/N°</span><span class="apa-value">${esc(meta.volume)}${meta.issue ? '('+esc(meta.issue)+')' : ''}</span></div>
+      <div class="apa-field"><span class="apa-label">Vol/N°</span><span class="apa-value">${meta.volume !== '—' ? esc(meta.volume) : ''}${meta.issue ? '('+esc(meta.issue)+')' : ''}</span></div>
       <div class="apa-field"><span class="apa-label">Páginas</span><span class="apa-value">${esc(meta.pages)}</span></div>
       <div class="apa-ref">${esc(apaRef)}</div>
     </div>
-    <button class="btn-ris" id="${risId}" onclick="downloadRIS(${rowIdx})">⬇ Descargar RIS</button>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:4px;">
+      <button class="btn-ris" id="${risId}" onclick="downloadRIS(${rowIdx})">⬇ RIS</button>
+      <button class="btn-ris" id="${bibId}" onclick="downloadBibTeX(${rowIdx})" style="background:#1a4a7a;border-color:#1a4a7a;">⬇ BibTeX</button>
+      <button class="btn-copy" onclick="copyAPA(${rowIdx},this)" style="font-size:10px">Copiar APA</button>
+    </div>
   `;
+  // Store apaRef for copy
+  results[rowIdx].apaRef = apaRef;
 }
 
-// ── Parse CrossRef message → meta object ──────────────────────────────────────
-function parseCrossRef(msg, doi) {
-  // Authors
-  const authorList = (msg.author || []).map(a => {
+// ── Parse CSL JSON → meta object ──────────────────────────────────────────────
+function parseCSL(csl, doi) {
+  const authorList = (csl.author || []).map(a => {
     if (a.family && a.given) return `${a.family}, ${a.given.charAt(0)}.`;
     if (a.family) return a.family;
     if (a.name)   return a.name;
@@ -864,23 +868,13 @@ function parseCrossRef(msg, doi) {
   }).filter(Boolean);
   const authors = authorList.join(', ') || '—';
 
-  // Year
-  const dateParts = msg.published?.['date-parts']?.[0]
-    || msg['published-print']?.['date-parts']?.[0]
-    || msg['published-online']?.['date-parts']?.[0]
-    || [];
-  const year = dateParts[0] ? String(dateParts[0]) : '—';
-
-  // Title
-  const title = (msg.title?.[0] || '—').replace(/<[^>]+>/g, '');
-
-  // Journal
-  const journal = (msg['container-title']?.[0] || msg['short-container-title']?.[0] || '—').replace(/<[^>]+>/g, '');
-
-  // Volume, issue, pages
-  const volume = msg.volume || '—';
-  const issue  = msg.issue  || '';
-  const pages  = msg.page   || '—';
+  const dateParts = csl.issued?.['date-parts']?.[0] || [];
+  const year   = dateParts[0] ? String(dateParts[0]) : '—';
+  const title  = (typeof csl.title === 'string' ? csl.title : (csl.title?.[0] || '—')).replace(/<[^>]+>/g, '');
+  const journal= ((csl['container-title'] || csl.publisher || '—')).replace(/<[^>]+>/g, '');
+  const volume = csl.volume || '—';
+  const issue  = csl.issue  || '';
+  const pages  = csl.page   || '—';
 
   return { authors, authorList, year, title, journal, volume, issue, pages, doi };
 }
@@ -898,6 +892,78 @@ function buildAPA(m) {
   const volPart = (vol || iss) ? ` ${vol}${iss}${pg}` : '';
 
   return `${authStr} (${m.year}). ${m.title}. ${m.journal},${volPart}. https://doi.org/${m.doi}`;
+}
+
+// ── Download BibTeX for single row ────────────────────────────────────────────
+function downloadBibTeX(rowIdx) {
+  const r = results[rowIdx];
+  if (!r || !r.meta) return;
+  // Si tenemos el BibTeX directo de doi.org, usarlo
+  if (r.meta.bibText) {
+    const slug = r.meta.title.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 40);
+    download(`${slug}_${r.meta.year}.bib`, r.meta.bibText, 'application/x-bibtex');
+    return;
+  }
+  // Construir BibTeX manualmente
+  const m = r.meta;
+  const key = `${(m.authorList[0]||'Author').split(',')[0]}${m.year}`;
+  const lines = [
+    `@article{${key},`,
+    `  author  = {${m.authorList.join(' and ') || m.authors}},`,
+    `  year    = {${m.year}},`,
+    `  title   = {${m.title}},`,
+    `  journal = {${m.journal}},`,
+    m.volume !== '—' ? `  volume  = {${m.volume}},` : '',
+    m.issue           ? `  number  = {${m.issue}},`  : '',
+    m.pages  !== '—' ? `  pages   = {${m.pages}},`  : '',
+    `  doi     = {${m.doi}},`,
+    `  url     = {https://doi.org/${m.doi}}`,
+    `}`,
+  ].filter(l => l !== '').join('\n');
+  const slug = m.title.replace(/[^a-zA-Z0-9]/g, '_').slice(0, 40);
+  download(`${slug}_${m.year}.bib`, lines, 'application/x-bibtex');
+}
+
+// ── Copy APA citation ──────────────────────────────────────────────────────────
+function copyAPA(rowIdx, btn) {
+  const r = results[rowIdx];
+  if (!r || !r.apaRef) return;
+  navigator.clipboard.writeText(r.apaRef).then(() => {
+    const orig = btn.textContent;
+    btn.textContent = '✓ Copiado';
+    btn.classList.add('copied');
+    setTimeout(() => { btn.textContent = orig; btn.classList.remove('copied'); }, 2000);
+  }).catch(() => {
+    const ta = document.createElement('textarea');
+    ta.value = r.apaRef; ta.style.position='fixed'; ta.style.opacity='0';
+    document.body.appendChild(ta); ta.select(); document.execCommand('copy');
+    document.body.removeChild(ta);
+  });
+}
+
+// ── Export all BibTeX ──────────────────────────────────────────────────────────
+function exportAllBibTeX() {
+  const withMeta = results.filter(r => r.meta);
+  if (!withMeta.length) { alert('Espera a que terminen de cargar los datos de CrossRef.'); return; }
+  const all = withMeta.map((r, i) => {
+    if (r.meta.bibText) return r.meta.bibText;
+    const m = r.meta;
+    const key = `${(m.authorList[0]||'Author').split(',')[0]}${m.year}`;
+    return [
+      `@article{${key},`,
+      `  author  = {${m.authorList.join(' and ') || m.authors}},`,
+      `  year    = {${m.year}},`,
+      `  title   = {${m.title}},`,
+      `  journal = {${m.journal}},`,
+      m.volume !== '—' ? `  volume  = {${m.volume}},` : '',
+      m.issue           ? `  number  = {${m.issue}},`  : '',
+      m.pages  !== '—' ? `  pages   = {${m.pages}},`  : '',
+      `  doi     = {${m.doi}},`,
+      `  url     = {https://doi.org/${m.doi}}`,
+      `}`,
+    ].filter(l=>l!=='').join('\n');
+  }).join('\n\n');
+  download('AntoMatic_Referencias_' + dateStr() + '.bib', all, 'application/x-bibtex');
 }
 
 // ── Download RIS for single row ────────────────────────────────────────────────
