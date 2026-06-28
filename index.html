@@ -727,8 +727,8 @@ function renderTable() {
     `;
     tbody.appendChild(tr);
 
-    // Fetch CrossRef asynchronously for each row with DOI
-    if (r.doi) { pendingFetches++; fetchCrossRef(r.doi, apaCellId, i); }
+    // Encolar para fetch secuencial (evita rate limit de CrossRef)
+    if (r.doi) { pendingFetches++; }
   });
 
   document.getElementById('cntFound').textContent = found;
@@ -737,8 +737,32 @@ function renderTable() {
   document.getElementById('summary').style.display = 'flex';
   document.getElementById('tableWrap').style.display = 'block';
   document.getElementById('exportRow').style.display = 'flex';
-  setStatus(`✓ Listo. ${found} DOI encontrados, ${missing} sin DOI. Consultando CrossRef...`);
+  setStatus(`✓ Listo. ${found} DOI encontrados. Consultando CrossRef (1 de ${found})...`);
+
+  // Lanzar cola secuencial con pausa entre requests
+  const doiQueue = results
+    .map((r, i) => ({ doi: r.doi, cellId: 'apa_' + i, rowIdx: i }))
+    .filter(item => item.doi);
+  runCrossRefQueue(doiQueue, found);
 }
+
+// ── Cola secuencial CrossRef ───────────────────────────────────────────────────
+// Procesa de a 1, con 350ms entre requests para respetar rate limit
+async function runCrossRefQueue(queue, total) {
+  for (let i = 0; i < queue.length; i++) {
+    const { doi, cellId, rowIdx } = queue[i];
+    setStatus(`⟳ CrossRef: consultando ${i + 1} de ${total}...`);
+    await fetchCrossRef(doi, cellId, rowIdx, true); // skipCheckAllDone=true
+    if (i < queue.length - 1) await sleep(350); // pausa entre requests
+  }
+  // Al terminar toda la cola
+  const ok  = results.filter(r => r.meta).length;
+  const err = results.filter(r => r.fetchError).length;
+  setStatus(`✓ Completado. ${ok} con metadatos CrossRef${err ? `, ${err} sin datos` : ''}.`);
+  reorderRows();
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 // ── CrossRef API — estrategia robusta ─────────────────────────────────────────
 // api.crossref.org tiene CORS real habilitado para todos los dominios web.
@@ -746,29 +770,47 @@ function renderTable() {
 const crossrefCache = {};
 let pendingFetches = 0;
 
-async function fetchCrossRef(doi, cellId, rowIdx) {
+async function fetchCrossRef(doi, cellId, rowIdx, skipCheckAllDone = false) {
   const cell = document.getElementById(cellId);
   if (!cell) return;
 
   if (crossrefCache[doi]) {
     renderApaCell(cell, crossrefCache[doi], doi, rowIdx);
-    checkAllDone();
+    if (!skipCheckAllDone) checkAllDone();
     return;
   }
 
-  // Intentar 3 endpoints en orden — todos con CORS real
-  const endpoints = [
-    // 1. CrossRef REST API (JSON estructurado) — el más confiable
-    () => fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}`, {
-            headers: { 'Accept': 'application/json' }
-          }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
-          .then(j => ({ type: 'crossref', data: j.message })),
+  // Intentar con reintentos ante 429 (rate limit) o 503
+  const fetchWithRetry = async (url, opts = {}, maxRetries = 3) => {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      const resp = await fetch(url, opts);
+      if (resp.status === 429 || resp.status === 503) {
+        // Rate limit — esperar más tiempo y reintentar
+        const wait = attempt * 1000; // 1s, 2s, 3s
+        setStatus(`⚠ CrossRef rate limit. Esperando ${wait/1000}s antes de reintentar...`);
+        await sleep(wait);
+        continue;
+      }
+      if (!resp.ok) throw new Error(resp.status);
+      return resp;
+    }
+    throw new Error('Max retries exceeded');
+  };
 
-    // 2. CrossRef content negotiation (CSL JSON directo)
-    () => fetch(`https://api.crossref.org/works/${encodeURIComponent(doi)}/transform/application/vnd.citationstyles.csl+json`, {
-            headers: { 'Accept': 'application/json' }
-          }).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
-          .then(j => ({ type: 'csl', data: j })),
+  const endpoints = [
+    async () => {
+      const r = await fetchWithRetry(`https://api.crossref.org/works/${encodeURIComponent(doi)}`,
+        { headers: { 'Accept': 'application/json' } });
+      const j = await r.json();
+      return { type: 'crossref', data: j.message };
+    },
+    async () => {
+      const r = await fetchWithRetry(
+        `https://api.crossref.org/works/${encodeURIComponent(doi)}/transform/application/vnd.citationstyles.csl+json`,
+        { headers: { 'Accept': 'application/json' } });
+      const j = await r.json();
+      return { type: 'csl', data: j };
+    },
   ];
 
   let result = null;
@@ -779,17 +821,17 @@ async function fetchCrossRef(doi, cellId, rowIdx) {
   if (!result) {
     results[rowIdx].fetchError = true;
     cell.innerHTML = `
-      <span class="apa-error">⚠ CrossRef no encontró este DOI<br><small style="opacity:.7">(puede ser artículo muy reciente o DOI con error)</small></span>
+      <span class="apa-error">⚠ CrossRef no encontró este DOI<br>
+      <small style="opacity:.7">(artículo muy reciente o DOI con error)</small></span>
       <br><div style="display:flex;gap:6px;margin-top:6px">
         <button class="btn-ris btn-ris-na" disabled>⬇ RIS</button>
         <button class="btn-ris btn-ris-na" disabled style="background:#1a4a7a;border-color:#1a4a7a">⬇ BibTeX</button>
       </div>
     `;
-    checkAllDone();
+    if (!skipCheckAllDone) checkAllDone();
     return;
   }
 
-  // Normalizar a CSL independientemente del endpoint usado
   let csl;
   if (result.type === 'crossref') {
     csl = crossrefMsgToCSL(result.data, doi);
@@ -798,14 +840,12 @@ async function fetchCrossRef(doi, cellId, rowIdx) {
     if (!csl.DOI) csl.DOI = doi;
   }
 
-  // Para BibTeX: construir desde los datos (no depender de doi.org redirect)
   const bibText = buildBibTeXFromCSL(csl, doi);
-
-  const cached = { csl, apaText: null, bibText, doi };
+  const cached  = { csl, apaText: null, bibText, doi };
   crossrefCache[doi] = cached;
   results[rowIdx].crossref = cached;
   renderApaCell(cell, cached, doi, rowIdx);
-  checkAllDone();
+  if (!skipCheckAllDone) checkAllDone();
 }
 
 // Convertir CrossRef REST message → CSL JSON simplificado
